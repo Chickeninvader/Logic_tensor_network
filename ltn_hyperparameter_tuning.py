@@ -1171,7 +1171,7 @@ if __name__ == '__main__':
     # Initialize Ray and start hyperparameter tuning
     # Resource will be used accordingly. The default is for gg colab notebook
     ray.shutdown()
-    ray.init(num_cpus=2, num_gpus=1, ignore_reinit_error=True)
+    ray.init(num_cpus=4, num_gpus=0, ignore_reinit_error=True)
 
     results = tune.Tuner(
         hyper_parameter_tune,

@@ -196,7 +196,7 @@ class DatasetGenerator():
 
         image_rgb = preprocess(image_rgb)
 
-        return image_rgb, coarse_label, fine_label
+        return image_rgb, coarse_label, fine_label, image_path
 
 
 def create_data_loaders(df_train, df_test, image_resize, batch_size, num_coarse_label, num_all_label):
@@ -453,7 +453,7 @@ def train(dataloader,
         description = "Epoch " + str(epoch)
         pbar.set_description_str(description)
 
-        for batch_idx, (data, labels_coarse, labels_fine) in enumerate(dataloader):
+        for batch_idx, (data, labels_coarse, labels_fine, image_path) in enumerate(dataloader):
             # Zero gradient
             optimizer.zero_grad(set_to_none=True)
 
@@ -635,7 +635,7 @@ def valid(dataloader,
         description = "Evaluate test set: "
         pbar.set_description_str(description)
 
-        for batch_idx, (data, labels_coarse, labels_fine) in enumerate(dataloader):
+        for batch_idx, (data, labels_coarse, labels_fine, image_path) in enumerate(dataloader):
 
             # Put image to device
             data, labels_coarse, labels_fine = data.to(
@@ -693,8 +693,6 @@ def valid(dataloader,
                     loss_fc = torch.nn.MultiLabelSoftMarginLoss()
                     loss = beta*(1. - sat_agg) + (1 - beta) * \
                         (loss_fc(prediction, labels_one_hot))
-
-            running_loss += loss.item()
 
             running_loss += loss.item()
 
@@ -909,7 +907,7 @@ def save_confusion_matrices(num_coarse_label: int, num_all_labels: int,
     print("Save confusion matrices")
 
     # Iterate through the test data and make predictions
-    for batch_idx, (data, labels_coarse, labels_fine) in enumerate(test_loader):
+    for batch_idx, (data, labels_coarse, labels_fine, image_path) in enumerate(test_loader):
         data = data.to(device)
 
         prediction = base_model(data).cpu().detach()
@@ -1014,8 +1012,6 @@ if __name__ == '__main__':
         description='Train and evaluate the model')
     parser.add_argument('--base_path', type=str, required=True,
                         help='Base path containing all files including results, models, train, and test data')
-    parser.add_argument('--description', type=str,
-                        help='Description for the model and training method')
     parser.add_argument('--mode', choices=["normal", "ltn_normal", "ltn_combine"], default='ltn_combine',
                         help='Training mode: normal, ltn_normal, or ltn_combine')
     parser.add_argument('--vit_model_index', choices=[0, 1, 2, 3, 4], type=int, default=0,
