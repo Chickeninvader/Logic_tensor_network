@@ -446,15 +446,10 @@ if __name__ == '__main__':
 
     # Load dataset
     df_train, df_test = process_image_folders(
-        base_train_folder, base_test_folder)
+        base_train_folder, base_test_folder, coarse_label_dict, fine_label_dict)
     train_loader, test_loader = create_data_loaders(
         df_train, df_test, image_resize, batch_size, num_coarse_label, num_all_label)
 
-    # Data Processing
-    df_train, df_test = process_image_folders(
-        base_train_folder, base_test_folder)
-    train_loader, test_loader = create_data_loaders(
-        df_train, df_test, image_resize, batch_size, num_coarse_label, num_all_label)
     print('get dataset successfully')
 
     # Model Initialization
@@ -555,4 +550,4 @@ if __name__ == '__main__':
     # Save confusion matrices to the result folder with the description
     save_confusion_matrices(num_coarse_label, num_all_label,
                             base_model, test_loader, result_folder_path,
-                            fine_grain_only, description)
+                            fine_grain_only, device, coarse_label_dict, fine_label_dict, description)

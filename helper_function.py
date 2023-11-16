@@ -87,9 +87,10 @@ def create_label_dict(category_dict):
     return coarse_label_dict, fine_label_dict, coarse_to_fine
 
 
-def create_one_hot_tensors(fine_label_dict, coarse_label_dict):
+def create_one_hot_tensors(fine_label_dict, coarse_label_dict, fine_grain_only):
     l = {}
-    num_labels = len(fine_label_dict) + len(coarse_label_dict)
+    num_labels = len(fine_label_dict) if fine_grain_only else len(
+        coarse_label_dict)
     for label in range(num_labels):
         one_hot = torch.zeros(num_labels)
         one_hot[label] = 1.0
@@ -131,7 +132,7 @@ def search_for_images_and_labels(folder):
     return data
 
 
-def process_image_folders(base_train_folder, base_test_folder):
+def process_image_folders(base_train_folder, base_test_folder, coarse_label_dict, fine_label_dict):
     # Process train folder
     train_data = search_for_images_and_labels(base_train_folder)
     df_train = pd.DataFrame(train_data)
@@ -331,7 +332,7 @@ def compute_sat_normally(base_model,
       - logits_to_predicate: get the satisfaction of a variable given the label
       - data, labels_coarse, labels_fine
       - coarse_label_dict, fine_label_dict,
-      - coarse_to_fine
+      - coarse_to_fine: dictionary map coarse to fine label
       - fine_grain_only: if true, the sat is changed accordingly
       - train: whether to train model again, when data is still not convert to prediction yet
 
@@ -339,6 +340,10 @@ def compute_sat_normally(base_model,
       sat_agg: sat_agg for all the rules
 
     """
+    # one hot labels
+    l = create_one_hot_tensors(
+        fine_label_dict, coarse_label_dict, fine_grain_only)
+
     Not = ltn.Connective(ltn.fuzzy_ops.NotStandard())
     And = ltn.Connective(ltn.fuzzy_ops.AndProd())
     Implies = ltn.Connective(ltn.fuzzy_ops.ImpliesReichenbach())
@@ -364,57 +369,44 @@ def compute_sat_normally(base_model,
     sat_agg_list = []
     sat_agg_label = []
 
-    # Coarse labels: for all x[i], x[i] -> l[i]
+    # Train coarse_grain_only
+    if fine_grain_only is False:
 
-    for i in coarse_label_dict.values():
-        if x_variables[i].value.numel() != 0:
-            sat_agg_label.append(
-                f'for all (coarse label) x[{i}], x[{i}] -> l[{i}]')
-            sat_agg_list.append(
-                Forall(x_variables[i], logits_to_predicate(x_variables[i], l[i])))
+        # Coarse labels: for all x[i], x[i] -> l[i]
 
-    # Coarse Label: for all x[coarse], - {x[coarse] and x[different coarse]}
-    # TODO: Double check the rule
-
-    for i in coarse_label_dict.values():
-        for j in coarse_label_dict.values():
-            if i != j:
-                sat_agg_label.append(
-                    f'for all (coarse label) x[{i}], - (x[{i}] ^ x[{j}])')
+        for i in range(len(coarse_label_dict)):
+            if x_variables[i].value.numel() != 0:
+                # change label to appropriate shape
                 sat_agg_list.append(
-                    Forall(x, Not(And(logits_to_predicate(x, l[i]), logits_to_predicate(x, l[j])))))
+                    Forall(x_variables[i], logits_to_predicate(x_variables[i], l[i])))
 
-    # Fine to coarse label: for all x[fine], x[fine] and x[correspond coarse]
+        # Coarse Label: for all x[coarse], - {x[coarse] and x[different coarse]}
 
-    for label_coarse, label_fine_list in coarse_to_fine.items():
-        for label_fine in label_fine_list:
-            if x_variables[label_fine].value.numel() != 0:
-                sat_agg_label.append(
-                    f'for all (fine label) x[{label_fine}], (x[{label_fine}] ^ x[{label_coarse}])')
-                sat_agg_list.append(Forall(x_variables[label_fine],
-                                           And(logits_to_predicate(x_variables[label_fine], l[label_fine]), logits_to_predicate(x_variables[label_fine], l[label_coarse])))
-                                    )
+        for i in range(len(coarse_label_dict)):
+            for j in range(len(coarse_label_dict)):
+                if i != j and x_variables[i].value.numel() != 0:
+                    sat_agg_list.append(
+                        Forall(x_variables[i], Not(logits_to_predicate(x_variables[i], l[j]))))
 
-    # Fine labels: for all x[i], x[i] -> l[i]
+    # Train fine_grain_only
+    else:
 
-    for i in fine_label_dict.values():
-        if x_variables[i].value.numel() != 0:
-            sat_agg_label.append(
-                f'for all (fine label) x[{i}], x[{i}] -> l[{i}]')
-            sat_agg_list.append(
-                Forall(x_variables[i], logits_to_predicate(x_variables[i], l[i])))
+        # Fine labels: for all x[i], x[i] -> l[i]
 
-    # TODO: Double check the rule
-    # Fine Label: for all x[fine], -{x[fine], x[diff_fine]}
+        for i in range(len(fine_label_dict)):
+            if x_variables[i].value.numel() != 0:
+                # change label to appropriate shape
+                sat_agg_list.append(
+                    Forall(x_variables[i], logits_to_predicate(x_variables[i], l[i])))
 
-    for _, label_fine_list in coarse_to_fine.items():
-        for label_fine in label_fine_list:
-            for i in label_fine_list:
-                if (x_variables[label_fine].value.numel() != 0) and (i != label_fine):
-                    sat_agg_label.append(
-                        f'for all (fine label) x[{label_fine}], -(x[{label_fine}] -> l[{i}])')
-                    sat_agg_list.append(Forall(x_variables[label_fine],
-                                        Not(logits_to_predicate(x_variables[label_fine], l[i]))))
+        # Coarse Label: for all x[coarse], - {x[coarse] and x[different coarse]}
+
+        for i in range(len(fine_label_dict)):
+            for j in range(len(fine_label_dict)):
+                if i != j and x_variables[i].value.numel() != 0:
+                    sat_agg_list.append(
+                        Forall(x_variables[i], Not(logits_to_predicate(x_variables[i], l[j]))))
+
     sat_agg = SatAgg(
         *sat_agg_list
     )
@@ -549,6 +541,8 @@ def save_confusion_matrices(num_coarse_label: int, num_all_labels: int,
                             base_model, test_loader: DataLoader,
                             save_path: str,
                             fine_grain_only: bool,
+                            device: str,
+                            coarse_label_dict, fine_label_dict,
                             description: str,) -> None:
     """
     Compute and save confusion matrices for coarse and fine labels based on the predictions
@@ -561,6 +555,8 @@ def save_confusion_matrices(num_coarse_label: int, num_all_labels: int,
         test_loader (DataLoader): DataLoader containing test data.
         save_path (str): Path to save the generated confusion matrix images.
         fine_grain_only (bool): Train fine grain only or not
+        device (str): device using to train model (cpu, cuda, ...)
+        coarse_label_dict, fine_label_dict: dictionary mapping name to number
         description (str)
 
     Returns:
@@ -583,70 +579,110 @@ def save_confusion_matrices(num_coarse_label: int, num_all_labels: int,
 
         prediction = base_model(data).cpu().detach()
 
-        prediction_coarse_label = prediction[:, coarse_index]
-        coarse_label_prediction_batch = torch.argmax(
-            prediction_coarse_label, dim=1)
-        coarse_label_prediction.extend(coarse_label_prediction_batch)
-        coarse_label_ground_truth.extend(labels_coarse)
+        if fine_grain_only:
+            prediction_fine_label = prediction
+            fine_label_prediction_batch = torch.argmax(
+                prediction_fine_label, dim=1)
+            fine_label_prediction.extend(fine_label_prediction_batch)
+            fine_label_ground_truth.extend(
+                labels_fine.cpu().detach() - num_coarse_label)
+        else:
+            prediction_coarse_label = prediction
+            coarse_label_prediction_batch = torch.argmax(
+                prediction_coarse_label, dim=1)
+            coarse_label_prediction.extend(coarse_label_prediction_batch)
+            coarse_label_ground_truth.extend(labels_coarse.cpu().detach())
 
-        prediction_fine_label = prediction[:, fine_index]
-        fine_label_prediction_batch = torch.argmax(
-            prediction_fine_label, dim=1) + num_coarse_label
-        fine_label_prediction.extend(fine_label_prediction_batch)
-        fine_label_ground_truth.extend(labels_fine)
+    # Save confusion metric
 
-        image_path_list.extend(image_path)
+    if not fine_grain_only:
 
-    # Compute confusion matrix for coarse labels
-    confusion_matrix_coarse = metrics.confusion_matrix(
-        coarse_label_ground_truth, coarse_label_prediction)
-    display_labels_coarse = [str(label)
-                             for label in range(num_coarse_label)]
+        # Compute confusion matrix for coarse labels
+        confusion_matrix_coarse = metrics.confusion_matrix(
+            coarse_label_ground_truth, coarse_label_prediction)
+        display_labels_coarse = [str(label)
+                                 for label in range(num_coarse_label)]
 
-    # Plot and save coarse label confusion matrix
-    fig_coarse, ax_coarse = plt.subplots(figsize=(15, 15))
-    cm_display_coarse = ConfusionMatrixDisplay(confusion_matrix=confusion_matrix_coarse,
-                                               display_labels=display_labels_coarse)
-    cm_display_coarse.plot(ax=ax_coarse, values_format='d')
-    ax_coarse.set_title('Coarse Label Confusion Matrix')
-    plt.savefig(
-        f'{save_path}/{description}_coarse_label_confusion_matrix.png')
-    plt.close(fig_coarse)
+        # Plot and save coarse label confusion matrix
+        fig_coarse, ax_coarse = plt.subplots(figsize=(15, 15))
+        cm_display_coarse = ConfusionMatrixDisplay(confusion_matrix=confusion_matrix_coarse,
+                                                   display_labels=display_labels_coarse)
+        cm_display_coarse.plot(ax=ax_coarse, values_format='d')
+        ax_coarse.set_title('Coarse Label Confusion Matrix')
+        plt.savefig(
+            f'{save_path}/{description}_coarse_label_confusion_matrix.png')
+        plt.close(fig_coarse)
 
-    print('Saved coarse label confusion matrix successfully')
+        print('Saved coarse label confusion matrix successfully')
 
-    # Compute confusion matrix for fine labels
-    confusion_matrix_fine = metrics.confusion_matrix(
-        fine_label_ground_truth, fine_label_prediction)
-    display_labels_fine = [str(label) for label in range(
-        num_coarse_label, num_all_labels)]
+        print('save coarse grain excel file')
 
-    # Plot and save fine label confusion matrix
-    fig_fine, ax_fine = plt.subplots(figsize=(15, 15))
-    cm_display_fine = ConfusionMatrixDisplay(confusion_matrix=confusion_matrix_fine,
-                                             display_labels=display_labels_fine)
-    cm_display_fine.plot(ax=ax_fine, values_format='d')
-    ax_fine.set_title('Fine Label Confusion Matrix')
-    plt.savefig(f'{save_path}/{description}_fine_label_confusion_matrix.png')
-    plt.close(fig_fine)
+        save_metrics_to_excel(coarse_label_ground_truth, coarse_label_prediction,
+                              coarse_label_dict, base_model,
+                              save_path,
+                              description + '_coarse'
+                              )
 
-    print('Saved fine label confusion matrix successfully')
+        print('save excel file successfully')
 
-    print('save coarse grain excel file')
-    save_metrics_to_excel(coarse_label_ground_truth, coarse_label_prediction,
-                          coarse_label_dict, base_model,
-                          save_path,
-                          description + '_coarse'
-                          )
+        # Save result for later use
 
-    print('save fine grain excel file')
-    save_metrics_to_excel(fine_label_ground_truth, fine_label_prediction,
-                          fine_label_dict, base_model,
-                          save_path,
-                          description + '_fine'
-                          )
+        coarse_label_prediction = np.array(coarse_label_prediction)
+        coarse_label_ground_truth = np.array(coarse_label_ground_truth)
+        image_path_list = np.array(image_path_list)
 
-    print('save excel file successfully')
+        # Concatenate the arrays along the second axis (axis=1)
+        concatenated_array = np.column_stack(
+            (coarse_label_prediction, coarse_label_ground_truth, image_path_list))
+
+        # Save the concatenated array
+        with open(f'{save_path}/concatenated_data_{description}.pkl', 'wb') as pickle_file:
+            pickle.dump(concatenated_array, pickle_file)
+
+        print('Save concatenated data successfully!')
+
+    else:
+        # Compute confusion matrix for fine labels
+        confusion_matrix_fine = metrics.confusion_matrix(
+            fine_label_ground_truth, fine_label_prediction)
+        display_labels_fine = [str(label) for label in range(
+            num_coarse_label, num_all_labels)]
+
+        # Plot and save fine label confusion matrix
+        fig_fine, ax_fine = plt.subplots(figsize=(15, 15))
+        cm_display_fine = ConfusionMatrixDisplay(confusion_matrix=confusion_matrix_fine,
+                                                 display_labels=display_labels_fine)
+        cm_display_fine.plot(ax=ax_fine, values_format='d')
+        ax_fine.set_title('Fine Label Confusion Matrix')
+        plt.savefig(
+            f'{save_path}/{description}_fine_label_confusion_matrix.png')
+        plt.close(fig_fine)
+
+        print('Saved fine label confusion matrix successfully')
+
+        print('save fine grain excel file')
+        save_metrics_to_excel(fine_label_ground_truth, fine_label_prediction,
+                              fine_label_dict, base_model,
+                              save_path,
+                              description + '_fine'
+                              )
+        print('save excel file successfully')
+
+        # Save result for later use
+
+        coarse_label_prediction = np.array(coarse_label_prediction)
+        coarse_label_ground_truth = np.array(coarse_label_ground_truth)
+        image_path_list = np.array(image_path_list)
+
+        # Concatenate the arrays along the second axis (axis=1)
+        concatenated_array = np.column_stack(
+            (coarse_label_prediction, coarse_label_ground_truth, image_path_list))
+
+        # Save the concatenated array
+        with open(f'{save_path}/concatenated_data_{description}.pkl', 'wb') as pickle_file:
+            pickle.dump(concatenated_array, pickle_file)
+
+        print('Save concatenated data successfully!')
 
 
 def calculate_loss(mode, base_model, logits_to_predicate, prediction, labels_coarse, labels_fine,

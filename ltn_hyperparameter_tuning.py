@@ -85,9 +85,10 @@ def create_label_dict(category_dict):
     return coarse_label_dict, fine_label_dict, coarse_to_fine
 
 
-def create_one_hot_tensors(fine_label_dict, coarse_label_dict):
+def create_one_hot_tensors(fine_label_dict, coarse_label_dict, fine_grain_only):
     l = {}
-    num_labels = len(fine_label_dict) + len(coarse_label_dict)
+    num_labels = len(fine_label_dict) if fine_grain_only else len(
+        coarse_label_dict)
     for label in range(num_labels):
         one_hot = torch.zeros(num_labels)
         one_hot[label] = 1.0
