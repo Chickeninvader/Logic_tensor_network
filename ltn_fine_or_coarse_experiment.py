@@ -1,3 +1,5 @@
+# This file will contain train adn valid function, hyperparamenter tuning and main function
+
 # import library
 import glob
 import argparse
@@ -41,6 +43,18 @@ from typing import List, Dict
 import pickle
 import random
 from helper_function import *
+from functools import partial
+import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import random_split
+import torchvision
+import torchvision.transforms as transforms
+from ray import tune
+from ray.air import Checkpoint, session
+from ray.tune.schedulers import ASHAScheduler
 
 
 def train(dataloader,
@@ -361,6 +375,54 @@ def valid(dataloader,
     return save_metric
 
 
+def hyper_parameter_tune(config):
+    # Load dataset
+    df_train, df_test = process_image_folders(
+        base_train_folder, base_test_folder, coarse_label_dict, fine_label_dict)
+    train_loader, test_loader = create_data_loaders(
+        df_train, df_test, image_resize, batch_size, num_coarse_label, num_all_label)
+
+    # Model Initialization
+    base_model = VITFineTuner(vit_model_index, num_output).to(device)
+    logits_to_predicate = ltn.Predicate(LogitsToPredicate()).to(ltn.device)
+
+    # Training Configuration
+    optimizer = torch.optim.Adam(base_model.parameters(), config['lr'])
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, 1, 0.9)
+
+    beta = config['beta']
+
+    for epoch in range(loaded_epoch, num_epochs):
+        with ClearCache(device):
+            evaluation_metric_train.append(train(train_loader,
+                                                 base_model, logits_to_predicate,
+                                                 beta,
+                                                 epoch,
+                                                 optimizer,
+                                                 scheduler,
+                                                 loss_mode,
+                                                 fine_grain_only, mode,
+                                                 device,
+                                                 coarse_label_dict, fine_label_dict, coarse_to_fine))
+            evaluation_metric_valid.append(valid(test_loader,
+                                                 base_model, logits_to_predicate,
+                                                 beta,
+                                                 loss_mode,
+                                                 fine_grain_only, mode,
+                                                 device,
+                                                 coarse_label_dict, fine_label_dict, coarse_to_fine))
+
+    # Checkpoint at end only. Ray support checkpoint based on the metric only on Ray Trainable class.
+    checkpoint_data = {
+        "model_state_dict": base_model.state_dict(),
+    }
+    # Send the result back to tune (for selecting best checkpoint)
+    session.report({"accuracy_recent_coarse": evaluation_metric_valid[-1][1],
+                    "accuracy_recent_fine": evaluation_metric_valid[-1][4]},
+                   )
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
@@ -395,7 +457,6 @@ if __name__ == '__main__':
     description = 'model ' + str(args.vit_model_index) + \
         ' ' + args.mode + ' ' + args.loss_mode + \
         ' ' + str(args.lr) + ' ' + str(args.beta) + ' ' + description_label
-    print(description)
     mode = args.mode
     vit_model_index = args.vit_model_index
     beta = args.beta
@@ -405,6 +466,9 @@ if __name__ == '__main__':
     load_checkpoint = args.load_checkpoint
     num_epochs = args.num_epochs
     batch_size = args.batch_size
+
+    # Show description:
+    print(description)
 
     # All label
     category_dict = {
@@ -461,10 +525,6 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(base_model.parameters(), lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 10, 0.1)
 
-    # Training Loop
-    evaluation_metric_train = []
-    evaluation_metric_valid = []
-
     if load_checkpoint:
         # Load the checkpoint
         checkpoint = torch.load(load_checkpoint_path)
@@ -496,46 +556,44 @@ if __name__ == '__main__':
 
     max_accuracy = 0
 
-    for epoch in range(loaded_epoch, num_epochs):
-        with ClearCache(device):
-            evaluation_metric_train.append(train(train_loader,
-                                                 base_model, logits_to_predicate,
-                                                 beta,
-                                                 epoch,
-                                                 optimizer,
-                                                 scheduler,
-                                                 loss_mode,
-                                                 fine_grain_only, mode,
-                                                 device,
-                                                 coarse_label_dict, fine_label_dict, coarse_to_fine))
-            evaluation_metric_valid.append(valid(test_loader,
-                                                 base_model, logits_to_predicate,
-                                                 beta,
-                                                 loss_mode,
-                                                 fine_grain_only, mode,
-                                                 device,
-                                                 coarse_label_dict, fine_label_dict, coarse_to_fine))
+    # Define the hyperparameter search space
+    # TODO: change hyperparameter search space
+    search_space = {
+        "lr": tune.loguniform(1e-6, 1e-5),
+        "beta": tune.quniform(0.2, 0.8, 0.2),
+    }
 
-            # TODO: Checkpoint best and last epoch
-            # Get best accuracy (index 1 and 4) as the evaluation metric for checkpoint
-            # Save the model if the validation metrics improve
+    hyperopt_search = HyperOptSearch(search_space,
+                                     metric="accuracy_recent_coarse",
+                                     mode="max")
 
-            torch.save({"model_state_dict": base_model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict()},
-                       f"{base_path}/model/model_{description}.pth")
+    # Initialize Ray and start hyperparameter tuning
+    # Resource will be used accordingly. The default is for gg colab notebook
+    ray.shutdown()
+    ray.init(num_cpus=2, num_gpus=1, ignore_reinit_error=True)
 
-            print(f"Saved PyTorch Model State to {description}")
+    # define tuner object
+    # TODO: Change metric when necessary, and resources
+    results = tune.Tuner(
+        tune.with_resources(
+            tune.with_parameters(hyper_parameter_tune),
+            resources={"cpu": 2, "gpu": 1}
+        ),
+        tune_config=tune.TuneConfig(
+            num_samples=2,
+            scheduler=ASHAScheduler(metric="accuracy_recent_coarse",
+                                    mode="max"),
+            search_alg=hyperopt_search,
+        ),
+    )
+    results.fit()
 
-            # Saving evaluation_metric_train
-            with open(f'{base_path}/model/evaluation_metric_train_{description}.pkl', 'wb') as f:
-                pickle.dump(evaluation_metric_train, f)
-
-            # Saving evaluation_metric_valid
-            with open(f'{base_path}/model/evaluation_metric_valid_{description}.pkl', 'wb') as f:
-                pickle.dump(evaluation_metric_valid, f)
-
-        print('#' * 100)
+    # Obtain a trial dataframe from all run trials of this `tune.run` call.
+    dfs = {result.path: result.metrics_dataframe for result in results}
+    # Plot by epoch
+    ax = None  # This plots everything on the same plot
+    for d in dfs.values():
+        ax = d.mean_accuracy.plot(ax=ax, legend=False)
 
     # TODO: change the directory to save result
     # Save evaluation metrics to the result folder with the description
